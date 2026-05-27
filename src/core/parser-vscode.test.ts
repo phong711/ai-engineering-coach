@@ -6,10 +6,10 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { reconstructFromJsonl } from './parser-vscode-files';
 import { parseCLIEventsFile } from './parser-vscode-cli';
-import { parseSessionFile, harnessFromPath, scanVsCodeDirs } from './parser-vscode';
+import { parseSessionFile, harnessFromPath, findVsCodeDirs, scanVsCodeDirs } from './parser-vscode';
 
 function withTempFile(name: string, content: string, run: (filePath: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-engineer-coach-'));
@@ -758,5 +758,32 @@ describe('harnessFromPath — VS Code Server', () => {
     const result = harnessFromPath('/home/alice/.vscode-server-insiders/data/User/workspaceStorage');
     expect(result).toBe('Local Agent (Server Insiders)');
     expect(result).not.toBe('Local Agent (Server)');
+  });
+});
+
+describe('findVsCodeDirs — VS Code Server', () => {
+  it('includes server workspaceStorage paths on non-Windows hosts', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-engineer-coach-vscode-'));
+    const home = process.env.HOME;
+    const userProfile = process.env.USERPROFILE;
+    const expected = [
+      path.join(root, '.config', 'Code', 'User', 'workspaceStorage'),
+      path.join(root, '.config', 'Code - Insiders', 'User', 'workspaceStorage'),
+      path.join(root, '.vscode-server', 'data', 'User', 'workspaceStorage'),
+      path.join(root, '.vscode-server-insiders', 'data', 'User', 'workspaceStorage'),
+    ];
+
+    for (const dir of expected) fs.mkdirSync(dir, { recursive: true });
+
+    process.env.HOME = root;
+    process.env.USERPROFILE = '';
+
+    try {
+      expect(findVsCodeDirs()).toEqual(expected);
+    } finally {
+      process.env.HOME = home;
+      process.env.USERPROFILE = userProfile;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

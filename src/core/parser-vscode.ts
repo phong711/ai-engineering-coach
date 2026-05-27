@@ -20,6 +20,8 @@ function isObj(v: unknown): v is Record<string, unknown> {
 
 export function harnessFromPath(logsDir: string): string {
   if (logsDir.includes('Code - Insiders')) return 'Local Agent (Insiders)';
+  // Check .vscode-server-insiders BEFORE .vscode-server — the latter is a
+  // substring of the former and would match incorrectly if checked first.
   if (logsDir.includes('.vscode-server-insiders')) return 'Local Agent (Server Insiders)';
   if (logsDir.includes('.vscode-server')) return 'Local Agent (Server)';
   if (logsDir.includes('.copilot')) return 'GitHub Copilot CLI';
@@ -44,7 +46,7 @@ export function findVsCodeDirs(): string[] {
     if (vsPath && fs.existsSync(vsPath) && !dirs.includes(vsPath)) dirs.push(vsPath);
   }
 
-  // VS Code Server (remote/SSH/devcontainer) paths
+  // VS Code Server only runs on the remote host (Linux/macOS), not on Windows directly.
   if (process.platform !== 'win32' && home) {
     const serverEditions = ['.vscode-server', '.vscode-server-insiders'];
     for (const serverDir of serverEditions) {
