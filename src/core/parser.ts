@@ -166,13 +166,18 @@ async function prefetchBatch(
 
 const BATCH_SIZE = 32;
 
-interface WorkerParseResponse {
-  result: {
-    workspaces: [string, Workspace][];
-    sessions: ParseResult['sessions'];
-    editLocIndex: [string, [string, number][]][];
-    sessionSourceIndex: [string, ParseResult['sessionSourceIndex'] extends Map<string, infer V> ? V : never][];
-  };
+type SessionSourceVal = ParseResult['sessionSourceIndex'] extends Map<string, infer V> ? V : never;
+
+interface WorkerChunkPayload {
+  sessions: ParseResult['sessions'];
+  editLocEntries: [string, [string, number][]][];
+  sourceEntries: [string, SessionSourceVal][];
+}
+
+interface WorkerDonePayload {
+  workspaces: [string, Workspace][];
+  orphanEditLoc: [string, [string, number][]][];
+  orphanSources: [string, SessionSourceVal][];
   dirMetas: DirMetas;
 }
 
@@ -666,6 +671,12 @@ export async function parseAllLogsViaWorker(
       let lastWorkspaceLogged = 0;
       let settled = false;
 
+      // Chunked-IPC accumulators (issue #106, S1). Declared per-attempt so a retry starts fresh.
+      const accSessions: ParseResult['sessions'] = [];
+      const accEditLoc = new Map<string, Map<string, number>>();
+      const accSources = new Map<string, SessionSourceVal>();
+      let chunkCount = 0;
+
       const finish = (fn: () => void): void => {
         if (settled) return;
         settled = true;
@@ -683,7 +694,7 @@ export async function parseAllLogsViaWorker(
         fail('parse worker timeout (10m)');
       }, TIMEOUT_MS);
 
-      child.on('message', (msg: { type: 'progress'; progress: LoadProgress } | { type: 'result'; payload: WorkerParseResponse } | { type: 'error'; message?: string }) => {
+      child.on('message', (msg: { type: 'progress'; progress: LoadProgress } | { type: 'chunk'; payload: WorkerChunkPayload } | { type: 'done'; payload: WorkerDonePayload } | { type: 'error'; message?: string }) => {
         if (msg.type === 'progress') {
           if (msg.progress.phase !== lastPhase) {
             lastPhase = msg.progress.phase;
@@ -702,14 +713,24 @@ export async function parseAllLogsViaWorker(
           return;
         }
 
-        if (msg.type === 'result') {
-          runtimeDebug('parser', 'child-result', `attempt=${attempt} workspaces=${msg.payload.result.workspaces.length} sessions=${msg.payload.result.sessions.length}`);
+        if (msg.type === 'chunk') {
+          chunkCount++;
+          for (const s of msg.payload.sessions) accSessions.push(s);
+          for (const [k, v] of msg.payload.editLocEntries) accEditLoc.set(k, new Map(v));
+          for (const [k, v] of msg.payload.sourceEntries) accSources.set(k, v);
+          return;
+        }
+
+        if (msg.type === 'done') {
+          for (const [k, v] of msg.payload.orphanEditLoc) accEditLoc.set(k, new Map(v));
+          for (const [k, v] of msg.payload.orphanSources) accSources.set(k, v);
+          runtimeDebug('parser', 'child-done', `attempt=${attempt} chunks=${chunkCount} workspaces=${msg.payload.workspaces.length} sessions=${accSessions.length}`);
           finish(() => {
             const result: ParseResult = {
-              workspaces: new Map(msg.payload.result.workspaces),
-              sessions: msg.payload.result.sessions,
-              editLocIndex: new Map(msg.payload.result.editLocIndex.map(([k, v]) => [k, new Map(v)])),
-              sessionSourceIndex: new Map(msg.payload.result.sessionSourceIndex),
+              workspaces: new Map(msg.payload.workspaces),
+              sessions: accSessions,
+              editLocIndex: accEditLoc,
+              sessionSourceIndex: accSources,
             };
             setMemoryCache(result, msg.payload.dirMetas);
             // Child already sent the stripped representation, but keep this idempotent.
